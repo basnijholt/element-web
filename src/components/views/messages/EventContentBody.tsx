@@ -23,7 +23,7 @@ import {
     ambiguousLinkTooltipRenderer,
     codeBlockRenderer,
     spoilerRenderer,
-    thinkingRenderer,
+    collapsibleRenderer,
     replacerToRenderFunction,
 } from "../../../renderer";
 import MatrixClientContext from "../../../contexts/MatrixClientContext.tsx";
@@ -69,9 +69,9 @@ interface ReplacerOptions {
      */
     renderTooltipsForAmbiguousLinks?: boolean;
     /**
-     * Whether to render AI thinking blocks as collapsible sections
+     * Whether to render collapsible blocks (thinking, tool calls, etc.)
      */
-    renderThinkingBlocks?: boolean;
+    renderCollapsibleBlocks?: boolean;
 }
 
 // Returns a memoized Replacer based on the input parameters
@@ -85,7 +85,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
     const replacer = useMemo(() => {
         const keywordRegexpPattern = mxEvent ? getPushDetailsKeywordPatternRegexp(mxEvent) : undefined;
         const replacers = filterBoolean<RendererMap>([
-            options.renderThinkingBlocks ? thinkingRenderer : undefined,
+            options.renderCollapsibleBlocks ? collapsibleRenderer : undefined,
             options.renderMentionPills ? mentionPillRenderer : undefined,
             options.renderKeywordPills && keywordRegexpPattern ? keywordPillRenderer : undefined,
             options.renderTooltipsForAmbiguousLinks && PlatformPeg.get()?.needsUrlTooltips()
@@ -103,7 +103,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
         });
     }, [
         mxEvent,
-        options.renderThinkingBlocks,
+        options.renderCollapsibleBlocks,
         options.renderMentionPills,
         options.renderKeywordPills,
         options.renderTooltipsForAmbiguousLinks,
