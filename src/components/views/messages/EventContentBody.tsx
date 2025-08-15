@@ -23,6 +23,7 @@ import {
     ambiguousLinkTooltipRenderer,
     codeBlockRenderer,
     spoilerRenderer,
+    thinkingRenderer,
     replacerToRenderFunction,
 } from "../../../renderer";
 import MatrixClientContext from "../../../contexts/MatrixClientContext.tsx";
@@ -67,6 +68,10 @@ interface ReplacerOptions {
      * Whether to render tooltips for ambiguous links, only effective on platforms which specify `needsUrlTooltips` true
      */
     renderTooltipsForAmbiguousLinks?: boolean;
+    /**
+     * Whether to render AI thinking blocks as collapsible sections
+     */
+    renderThinkingBlocks?: boolean;
 }
 
 // Returns a memoized Replacer based on the input parameters
@@ -80,6 +85,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
     const replacer = useMemo(() => {
         const keywordRegexpPattern = mxEvent ? getPushDetailsKeywordPatternRegexp(mxEvent) : undefined;
         const replacers = filterBoolean<RendererMap>([
+            options.renderThinkingBlocks ? thinkingRenderer : undefined,
             options.renderMentionPills ? mentionPillRenderer : undefined,
             options.renderKeywordPills && keywordRegexpPattern ? keywordPillRenderer : undefined,
             options.renderTooltipsForAmbiguousLinks && PlatformPeg.get()?.needsUrlTooltips()
@@ -97,6 +103,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
         });
     }, [
         mxEvent,
+        options.renderThinkingBlocks,
         options.renderMentionPills,
         options.renderKeywordPills,
         options.renderTooltipsForAmbiguousLinks,
