@@ -1366,6 +1366,10 @@
         "name_email_mxid_share_space": "Bjud in någon med deras namn, e-postadress eller användarnamn (som <userId/>), eller <a>dela det här rummet</a>.",
         "name_mxid_share_room": "Bjud in någon med deras namn eller användarnamn (som <userId/>) eller <a>dela det här rummet</a>.",
         "name_mxid_share_space": "Bjud in någon med deras namn eller användarnamn (som <userId/>), eller <a>dela det här utrymmet</a>.",
+        "progress": {
+            "dont_close": "Stäng inte appen förrän det är klart.",
+            "preparing": "Förbereder inbjudningar …"
+        },
         "recents_section": "Senaste konversationerna",
         "room_failed_partial": "Vi skickade de andra, men personerna nedan kunde inte bjudas in till <RoomName/>",
         "room_failed_partial_title": "Vissa inbjudningar kunde inte skickas",
@@ -1763,6 +1767,7 @@
     },
     "power_level": {
         "admin": "Administratör",
+        "creator": "Ägare",
         "custom": "Anpassad (%(level)s)",
         "custom_level": "Anpassad nivå",
         "default": "Standard",
@@ -1870,11 +1875,6 @@
                 "other": "Du kan bara fästa upp till %(count)s widgets"
             },
             "menu": "Öppna menyn",
-            "release_announcement": {
-                "close": "OK",
-                "description": "Du hittar alla fästa meddelanden här. För muspekaren över ett meddelande och välj \"Fäst\" för att lägga till det.",
-                "title": "Alla nya fästa meddelanden"
-            },
             "reply_thread": "Svara på ett <link> trådmeddelande </link>",
             "unpin_all": {
                 "button": "Lossa alla meddelanden",
@@ -1915,6 +1915,7 @@
         "thread_list": {
             "context_menu_label": "Trådalternativ"
         },
+        "title": "Högerpanel",
         "video_room_chat": {
             "title": "Chatt"
         }
@@ -2005,8 +2006,6 @@
             "send_message_start_dm": "Skicka ditt första meddelande för att bjuda in <displayName/> att chatta",
             "start_of_dm_history": "Det här är början på din direktmeddelandehistorik med <displayName/>.",
             "start_of_room": "Det här är början på <roomName/>.",
-            "topic": "Ämne: %(topic)s ",
-            "topic_edit": "Ämne: %(topic)s (<a>redigera</a>)",
             "unencrypted_warning": "Totalsträckskryptering är inte aktiverat",
             "user_created": "%(displayName)s skapade det här rummet.",
             "you_created": "Du skapade det här rummet."
@@ -2062,7 +2061,6 @@
             "button_close_list": "Stäng listan",
             "button_view_all": "Visa alla",
             "description": "Det här rummet har fästa meddelanden. Klicka för att se dem.",
-            "go_to_message": "Visa det fästa meddelandet på tidslinjen.",
             "title": "<bold>%(index)s av %(length)s</bold> fästa meddelanden"
         },
         "read_topic": "Klicka för att läsa ämne",

@@ -39,9 +39,16 @@ import {
     ConnectionState,
     JitsiCall,
     ElementCall,
+    ElementCallIntent,
 } from "../../../src/models/Call";
-import { stubClient, mkEvent, mkRoomMember, setupAsyncStoreWithClient, mockPlatformPeg } from "../../test-utils";
-import MediaDeviceHandler, { MediaDeviceKindEnum } from "../../../src/MediaDeviceHandler";
+import {
+    stubClient,
+    mkEvent,
+    mkRoomMember,
+    setupAsyncStoreWithClient,
+    mockPlatformPeg,
+    MockEventEmitter,
+} from "../../test-utils";
 import { MatrixClientPeg } from "../../../src/MatrixClientPeg";
 import WidgetStore from "../../../src/stores/WidgetStore";
 import { WidgetMessagingStore } from "../../../src/stores/widgets/WidgetMessagingStore";
@@ -51,21 +58,7 @@ import SettingsStore from "../../../src/settings/SettingsStore";
 import { Anonymity, PosthogAnalytics } from "../../../src/PosthogAnalytics";
 import { type SettingKey } from "../../../src/settings/Settings.tsx";
 import SdkConfig from "../../../src/SdkConfig.ts";
-import RoomListStore from "../../../src/stores/room-list/RoomListStore.ts";
-import { DefaultTagID } from "../../../src/stores/room-list/models.ts";
 import DMRoomMap from "../../../src/utils/DMRoomMap.ts";
-
-jest.spyOn(MediaDeviceHandler, "getDevices").mockResolvedValue({
-    [MediaDeviceKindEnum.AudioInput]: [
-        { deviceId: "1", groupId: "1", kind: "audioinput", label: "Headphones", toJSON: () => {} },
-    ],
-    [MediaDeviceKindEnum.VideoInput]: [
-        { deviceId: "2", groupId: "2", kind: "videoinput", label: "Built-in webcam", toJSON: () => {} },
-    ],
-    [MediaDeviceKindEnum.AudioOutput]: [],
-});
-jest.spyOn(MediaDeviceHandler, "getAudioInput").mockReturnValue("1");
-jest.spyOn(MediaDeviceHandler, "getVideoInput").mockReturnValue("2");
 
 const enabledSettings = new Set(["feature_group_calls", "feature_video_rooms", "feature_element_call_video_rooms"]);
 jest.spyOn(SettingsStore, "getValue").mockImplementation(
@@ -78,6 +71,7 @@ const setUpClientRoomAndStores = (): {
     alice: RoomMember;
     bob: RoomMember;
     carol: RoomMember;
+    roomSession: Mocked<MatrixRTCSession>;
 } => {
     stubClient();
     const client = mocked<MatrixClient>(MatrixClientPeg.safeGet());
@@ -106,12 +100,13 @@ const setUpClientRoomAndStores = (): {
     jest.spyOn(room, "getMyMembership").mockReturnValue(KnownMembership.Join);
 
     client.getRoom.mockImplementation((roomId) => (roomId === room.roomId ? room : null));
-    client.getRoom.mockImplementation((roomId) => (roomId === room.roomId ? room : null));
-    client.matrixRTC.getRoomSession.mockImplementation((roomId) => {
-        const session = new EventEmitter() as MatrixRTCSession;
-        session.memberships = [];
-        return session;
-    });
+
+    const roomSession = new MockEventEmitter({
+        memberships: [],
+        getOldestMembership: jest.fn().mockReturnValue(undefined),
+    }) as Mocked<MatrixRTCSession>;
+
+    client.matrixRTC.getRoomSession.mockReturnValue(roomSession);
     client.getRooms.mockReturnValue([room]);
     client.getUserId.mockReturnValue(alice.userId);
     client.getDeviceId.mockReturnValue("alices_device");
@@ -133,21 +128,14 @@ const setUpClientRoomAndStores = (): {
     setupAsyncStoreWithClient(WidgetStore.instance, client);
     setupAsyncStoreWithClient(WidgetMessagingStore.instance, client);
 
-    return { client, room, alice, bob, carol };
+    return { client, room, alice, bob, carol, roomSession };
 };
 
 const cleanUpClientRoomAndStores = (client: MatrixClient, room: Room) => {
     client.reEmitter.stopReEmitting(room, [RoomStateEvent.Events]);
 };
 
-const setUpWidget = (
-    call: Call,
-): {
-    widget: Widget;
-    messaging: Mocked<ClientWidgetApi>;
-    audioMutedSpy: jest.SpyInstance<boolean, []>;
-    videoMutedSpy: jest.SpyInstance<boolean, []>;
-} => {
+const setUpWidget = (call: Call): { widget: Widget; messaging: Mocked<ClientWidgetApi> } => {
     call.widget.data = { ...call.widget, skipLobby: true };
     const widget = new Widget(call.widget);
 
@@ -165,23 +153,45 @@ const setUpWidget = (
     } as unknown as Mocked<ClientWidgetApi>;
     WidgetMessagingStore.instance.storeMessaging(widget, call.roomId, messaging);
 
-    const audioMutedSpy = jest.spyOn(MediaDeviceHandler, "startWithAudioMuted", "get");
-    const videoMutedSpy = jest.spyOn(MediaDeviceHandler, "startWithVideoMuted", "get");
-
-    return { widget, messaging, audioMutedSpy, videoMutedSpy };
+    return { widget, messaging };
 };
 
-const cleanUpCallAndWidget = (
-    call: Call,
-    widget: Widget,
-    audioMutedSpy: jest.SpyInstance<boolean, []>,
-    videoMutedSpy: jest.SpyInstance<boolean, []>,
-) => {
+async function connect(call: Call, messaging: Mocked<ClientWidgetApi>, startWidget = true): Promise<void> {
+    async function sessionConnect() {
+        await new Promise<void>((r) => {
+            setTimeout(() => r(), 400);
+        });
+        messaging.emit(`action:${ElementWidgetActions.JoinCall}`, new CustomEvent("widgetapirequest", {}));
+    }
+    async function runTimers() {
+        jest.advanceTimersByTime(500);
+        jest.advanceTimersByTime(500);
+    }
+    sessionConnect();
+    await Promise.all([...(startWidget ? [call.start()] : []), runTimers()]);
+}
+
+async function disconnect(call: Call, messaging: Mocked<ClientWidgetApi>): Promise<void> {
+    async function sessionDisconnect() {
+        await new Promise<void>((r) => {
+            setTimeout(() => r(), 400);
+        });
+        messaging.emit(`action:${ElementWidgetActions.HangupCall}`, new CustomEvent("widgetapirequest", {}));
+    }
+    async function runTimers() {
+        jest.advanceTimersByTime(500);
+        jest.advanceTimersByTime(500);
+    }
+    sessionDisconnect();
+    const promise = call.disconnect();
+    runTimers();
+    await promise;
+}
+
+const cleanUpCallAndWidget = (call: Call, widget: Widget) => {
     call.destroy();
     jest.clearAllMocks();
     WidgetMessagingStore.instance.stopMessaging(widget, call.roomId);
-    audioMutedSpy.mockRestore();
-    videoMutedSpy.mockRestore();
 };
 
 describe("JitsiCall", () => {
@@ -225,8 +235,6 @@ describe("JitsiCall", () => {
         let call: JitsiCall;
         let widget: Widget;
         let messaging: Mocked<ClientWidgetApi>;
-        let audioMutedSpy: jest.SpyInstance<boolean, []>;
-        let videoMutedSpy: jest.SpyInstance<boolean, []>;
 
         beforeEach(async () => {
             jest.useFakeTimers();
@@ -237,7 +245,7 @@ describe("JitsiCall", () => {
             if (maybeCall === null) throw new Error("Failed to create call");
             call = maybeCall;
 
-            ({ widget, messaging, audioMutedSpy, videoMutedSpy } = setUpWidget(call));
+            ({ widget, messaging } = setUpWidget(call));
 
             mocked(messaging.transport).send.mockImplementation(async (action, data): Promise<any> => {
                 if (action === ElementWidgetActions.JoinCall) {
@@ -255,102 +263,37 @@ describe("JitsiCall", () => {
             });
         });
 
-        afterEach(() => cleanUpCallAndWidget(call, widget, audioMutedSpy, videoMutedSpy));
+        afterEach(() => cleanUpCallAndWidget(call, widget));
 
-        it("connects muted", async () => {
+        it("connects", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            audioMutedSpy.mockReturnValue(true);
-            videoMutedSpy.mockReturnValue(true);
-
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
-            expect(messaging.transport.send).toHaveBeenCalledWith(ElementWidgetActions.JoinCall, {
-                audioInput: null,
-                videoInput: null,
-            });
         });
 
-        it("connects unmuted", async () => {
-            expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            audioMutedSpy.mockReturnValue(false);
-            videoMutedSpy.mockReturnValue(false);
-
-            await call.start();
-            expect(call.connectionState).toBe(ConnectionState.Connected);
-            expect(messaging.transport.send).toHaveBeenCalledWith(ElementWidgetActions.JoinCall, {
-                audioInput: "Headphones",
-                videoInput: "Built-in webcam",
-            });
-        });
-
-        it("waits for messaging when connecting", async () => {
+        it("waits for messaging when starting", async () => {
             // Temporarily remove the messaging to simulate connecting while the
             // widget is still initializing
             WidgetMessagingStore.instance.stopMessaging(widget, room.roomId);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
 
-            const connect = call.start();
+            const startup = call.start();
             WidgetMessagingStore.instance.storeMessaging(widget, room.roomId, messaging);
-            await connect;
+            await startup;
+            await connect(call, messaging, false);
             expect(call.connectionState).toBe(ConnectionState.Connected);
         });
 
-        it("doesn't stop messaging when connecting", async () => {
-            // Temporarily remove the messaging to simulate connecting while the
-            // widget is still initializing
-            jest.useFakeTimers();
-            const oldSendMock = messaging.transport.send;
-            mocked(messaging.transport).send.mockImplementation(async (action: string): Promise<any> => {
-                if (action === ElementWidgetActions.JoinCall) {
-                    await new Promise((resolve) => setTimeout(resolve, 100));
-                    messaging.emit(
-                        `action:${ElementWidgetActions.JoinCall}`,
-                        new CustomEvent("widgetapirequest", { detail: {} }),
-                    );
-                }
-            });
-            expect(call.connectionState).toBe(ConnectionState.Disconnected);
-
-            const connect = call.start();
-            async function runTimers() {
-                jest.advanceTimersByTime(500);
-                jest.advanceTimersByTime(1000);
-            }
-            async function runStopMessaging() {
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-                WidgetMessagingStore.instance.stopMessaging(widget, room.roomId);
-            }
-            runStopMessaging();
-            runTimers();
-            let connectError;
-            try {
-                await connect;
-            } catch (e) {
-                console.log(e);
-                connectError = e;
-            }
-            expect(connectError).toBeDefined();
-            // const connect2 = await connect;
-            // expect(connect2).toThrow();
-            messaging.transport.send = oldSendMock;
-            jest.useRealTimers();
-        });
-
-        it("fails to connect if the widget returns an error", async () => {
-            mocked(messaging.transport).send.mockRejectedValue(new Error("never!!1! >:("));
-            await expect(call.start()).rejects.toBeDefined();
-        });
-
         it("fails to disconnect if the widget returns an error", async () => {
-            await call.start();
-            mocked(messaging.transport).send.mockRejectedValue(new Error("never!!1! >:("));
+            await connect(call, messaging);
+            mocked(messaging.transport).send.mockRejectedValue(new Error("never!"));
             await expect(call.disconnect()).rejects.toBeDefined();
         });
 
         it("handles remote disconnection", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
 
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
 
             const callback = jest.fn();
@@ -358,7 +301,6 @@ describe("JitsiCall", () => {
             call.on(CallEvent.ConnectionState, callback);
 
             messaging.emit(`action:${ElementWidgetActions.HangupCall}`, new CustomEvent("widgetapirequest", {}));
-            messaging.emit(`action:${ElementWidgetActions.Close}`, new CustomEvent("widgetapirequest", {}));
             await waitFor(() => {
                 expect(callback).toHaveBeenNthCalledWith(1, ConnectionState.Disconnected, ConnectionState.Connected);
             });
@@ -368,14 +310,14 @@ describe("JitsiCall", () => {
 
         it("disconnects", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             await call.disconnect();
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
         });
 
         it("disconnects when we leave the room", async () => {
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             room.emit(RoomEvent.MyMembership, room, KnownMembership.Leave);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
@@ -383,14 +325,14 @@ describe("JitsiCall", () => {
 
         it("reconnects after disconnect in video rooms", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             await call.disconnect();
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
         });
 
         it("remains connected if we stay in the room", async () => {
-            await call.start();
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             room.emit(RoomEvent.MyMembership, room, KnownMembership.Join);
             expect(call.connectionState).toBe(ConnectionState.Connected);
@@ -416,7 +358,7 @@ describe("JitsiCall", () => {
 
             // Now, stub out client.sendStateEvent so we can test our local echo
             client.sendStateEvent.mockReset();
-            await call.start();
+            await connect(call, messaging);
             expect(call.participants).toEqual(
                 new Map([
                     [alice, new Set(["alices_device"])],
@@ -429,8 +371,8 @@ describe("JitsiCall", () => {
         });
 
         it("updates room state when connecting and disconnecting", async () => {
+            await connect(call, messaging);
             const now1 = Date.now();
-            await call.start();
             await waitFor(
                 () =>
                     expect(
@@ -457,7 +399,7 @@ describe("JitsiCall", () => {
         });
 
         it("repeatedly updates room state while connected", async () => {
-            await call.start();
+            await connect(call, messaging);
             await waitFor(
                 () =>
                     expect(client.sendStateEvent).toHaveBeenLastCalledWith(
@@ -487,7 +429,7 @@ describe("JitsiCall", () => {
             const onConnectionState = jest.fn();
             call.on(CallEvent.ConnectionState, onConnectionState);
 
-            await call.start();
+            await connect(call, messaging);
             await call.disconnect();
             expect(onConnectionState.mock.calls).toEqual([
                 [ConnectionState.Connected, ConnectionState.Disconnected],
@@ -502,7 +444,7 @@ describe("JitsiCall", () => {
             const onParticipants = jest.fn();
             call.on(CallEvent.Participants, onParticipants);
 
-            await call.start();
+            await connect(call, messaging);
             await call.disconnect();
             expect(onParticipants.mock.calls).toEqual([
                 [new Map([[alice, new Set(["alices_device"])]]), new Map()],
@@ -515,7 +457,7 @@ describe("JitsiCall", () => {
         });
 
         it("switches to spotlight layout when the widget becomes a PiP", async () => {
-            await call.start();
+            await connect(call, messaging);
             ActiveWidgetStore.instance.emit(ActiveWidgetStoreEvent.Undock);
             expect(messaging.transport.send).toHaveBeenCalledWith(ElementWidgetActions.SpotlightLayout, {});
             ActiveWidgetStore.instance.emit(ActiveWidgetStoreEvent.Dock);
@@ -559,7 +501,7 @@ describe("JitsiCall", () => {
             });
 
             it("doesn't clean up valid devices", async () => {
-                await call.start();
+                await connect(call, messaging);
                 await client.sendStateEvent(
                     room.roomId,
                     JitsiCall.MEMBER_EVENT_TYPE,
@@ -619,55 +561,14 @@ describe("ElementCall", () => {
     let client: Mocked<MatrixClient>;
     let room: Room;
     let alice: RoomMember;
-
+    let roomSession: Mocked<MatrixRTCSession>;
     function setRoomMembers(memberIds: string[]) {
         jest.spyOn(room, "getJoinedMembers").mockReturnValue(memberIds.map((id) => ({ userId: id }) as RoomMember));
     }
 
-    const callConnectProcedure = async (call: ElementCall, startWidget = true): Promise<void> => {
-        async function sessionConnect() {
-            await new Promise<void>((r) => {
-                setTimeout(() => r(), 400);
-            });
-            client.matrixRTC.emit(MatrixRTCSessionManagerEvents.SessionStarted, call.roomId, {
-                sessionId: undefined,
-            } as unknown as MatrixRTCSession);
-            call.session?.emit(
-                MatrixRTCSessionEvent.MembershipsChanged,
-                [],
-                [{ sender: client.getUserId() } as CallMembership],
-            );
-        }
-        async function runTimers() {
-            jest.advanceTimersByTime(500);
-            jest.advanceTimersByTime(500);
-        }
-        sessionConnect();
-        await Promise.all([...(startWidget ? [call.start()] : []), runTimers()]);
-    };
-    const callDisconnectionProcedure: (call: ElementCall) => Promise<void> = async (call) => {
-        async function sessionDisconnect() {
-            await new Promise<void>((r) => {
-                setTimeout(() => r(), 400);
-            });
-            client.matrixRTC.emit(MatrixRTCSessionManagerEvents.SessionStarted, call.roomId, {
-                sessionId: undefined,
-            } as unknown as MatrixRTCSession);
-            call.session?.emit(MatrixRTCSessionEvent.MembershipsChanged, [], []);
-        }
-        async function runTimers() {
-            jest.advanceTimersByTime(500);
-            jest.advanceTimersByTime(500);
-        }
-        sessionDisconnect();
-        const promise = call.disconnect();
-        runTimers();
-        await promise;
-    };
-
     beforeEach(() => {
         jest.useFakeTimers();
-        ({ client, room, alice } = setUpClientRoomAndStores());
+        ({ client, room, alice, roomSession } = setUpClientRoomAndStores());
         SdkConfig.reset();
     });
 
@@ -678,7 +579,16 @@ describe("ElementCall", () => {
     });
 
     describe("get", () => {
-        afterEach(() => Call.get(room)?.destroy());
+        let getUserIdForRoomIdSpy: jest.SpyInstance;
+
+        beforeEach(() => {
+            getUserIdForRoomIdSpy = jest.spyOn(DMRoomMap.shared(), "getUserIdForRoomId");
+        });
+
+        afterEach(() => {
+            Call.get(room)?.destroy();
+            getUserIdForRoomIdSpy.mockRestore();
+        });
 
         it("finds no calls", () => {
             expect(Call.get(room)).toBeNull();
@@ -707,11 +617,7 @@ describe("ElementCall", () => {
 
         it("finds ongoing calls that are created by the session manager", async () => {
             // There is an existing session created by another user in this room.
-            client.matrixRTC.getRoomSession.mockReturnValue({
-                on: (ev: any, fn: any) => {},
-                off: (ev: any, fn: any) => {},
-                memberships: [{ fakeVal: "fake membership" }],
-            } as unknown as MatrixRTCSession);
+            roomSession.memberships.push({} as CallMembership);
             const call = Call.get(room);
             if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
         });
@@ -857,19 +763,50 @@ describe("ElementCall", () => {
             expect(urlParams.get("analyticsID")).toBeFalsy();
         });
 
-        it("requests ringing notifications in DMs", async () => {
-            const tagsSpy = jest.spyOn(RoomListStore.instance, "getTagsForRoom");
-            try {
-                tagsSpy.mockReturnValue([DefaultTagID.DM]);
-                ElementCall.create(room);
-                const call = Call.get(room);
-                if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
+        it("requests ringing notifications and correct intent in DMs", async () => {
+            getUserIdForRoomIdSpy.mockImplementation((roomId: string) =>
+                room.roomId === roomId ? "any-user" : undefined,
+            );
+            ElementCall.create(room);
+            const call = Call.get(room);
+            if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
 
-                const urlParams = new URLSearchParams(new URL(call.widget.url).hash.slice(1));
-                expect(urlParams.get("sendNotificationType")).toBe("ring");
-            } finally {
-                tagsSpy.mockRestore();
-            }
+            const urlParams = new URLSearchParams(new URL(call.widget.url).hash.slice(1));
+            expect(urlParams.get("sendNotificationType")).toBe("ring");
+            expect(urlParams.get("intent")).toBe(ElementCallIntent.StartCallDM);
+        });
+
+        it("requests correct intent when answering DMs", async () => {
+            roomSession.getOldestMembership.mockReturnValue({} as CallMembership);
+            getUserIdForRoomIdSpy.mockImplementation((roomId: string) =>
+                room.roomId === roomId ? "any-user" : undefined,
+            );
+            ElementCall.create(room);
+            const call = Call.get(room);
+            if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
+
+            const urlParams = new URLSearchParams(new URL(call.widget.url).hash.slice(1));
+            expect(urlParams.get("intent")).toBe(ElementCallIntent.JoinExistingDM);
+        });
+
+        it("requests correct intent when creating a non-DM call", async () => {
+            roomSession.getOldestMembership.mockReturnValue(undefined);
+            ElementCall.create(room);
+            const call = Call.get(room);
+            if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
+
+            const urlParams = new URLSearchParams(new URL(call.widget.url).hash.slice(1));
+            expect(urlParams.get("intent")).toBe(ElementCallIntent.StartCall);
+        });
+
+        it("requests correct intent when joining a non-DM call", async () => {
+            roomSession.getOldestMembership.mockReturnValue({} as CallMembership);
+            ElementCall.create(room);
+            const call = Call.get(room);
+            if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
+
+            const urlParams = new URLSearchParams(new URL(call.widget.url).hash.slice(1));
+            expect(urlParams.get("intent")).toBe(ElementCallIntent.JoinExisting);
         });
 
         it("requests visual notifications in non-DMs", async () => {
@@ -886,8 +823,6 @@ describe("ElementCall", () => {
         let call: ElementCall;
         let widget: Widget;
         let messaging: Mocked<ClientWidgetApi>;
-        let audioMutedSpy: jest.SpyInstance<boolean, []>;
-        let videoMutedSpy: jest.SpyInstance<boolean, []>;
 
         beforeEach(async () => {
             jest.useFakeTimers();
@@ -898,27 +833,28 @@ describe("ElementCall", () => {
             if (maybeCall === null) throw new Error("Failed to create call");
             call = maybeCall;
 
-            ({ widget, messaging, audioMutedSpy, videoMutedSpy } = setUpWidget(call));
+            ({ widget, messaging } = setUpWidget(call));
         });
 
-        afterEach(() => cleanUpCallAndWidget(call, widget, audioMutedSpy, videoMutedSpy));
+        afterEach(() => cleanUpCallAndWidget(call, widget));
         // TODO refactor initial device configuration to use the EW settings.
         // Add tests for passing EW device configuration to the widget.
-        it("waits for messaging when connecting", async () => {
+        it("waits for messaging when starting", async () => {
             // Temporarily remove the messaging to simulate connecting while the
             // widget is still initializing
 
             WidgetMessagingStore.instance.stopMessaging(widget, room.roomId);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
 
-            const connect = callConnectProcedure(call);
+            const startup = call.start();
             WidgetMessagingStore.instance.storeMessaging(widget, room.roomId, messaging);
-            await connect;
+            await startup;
+            await connect(call, messaging, false);
             expect(call.connectionState).toBe(ConnectionState.Connected);
         });
 
         it("fails to disconnect if the widget returns an error", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             mocked(messaging.transport).send.mockRejectedValue(new Error("never!!1! >:("));
             await expect(call.disconnect()).rejects.toBeDefined();
         });
@@ -926,7 +862,7 @@ describe("ElementCall", () => {
         it("handles remote disconnection", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
 
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
 
             messaging.emit(`action:${ElementWidgetActions.HangupCall}`, new CustomEvent("widgetapirequest", {}));
@@ -936,35 +872,35 @@ describe("ElementCall", () => {
 
         it("disconnects", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
-            await callDisconnectionProcedure(call);
+            await disconnect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
         });
 
         it("disconnects when we leave the room", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             room.emit(RoomEvent.MyMembership, room, KnownMembership.Leave);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
         });
 
         it("remains connected if we stay in the room", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             room.emit(RoomEvent.MyMembership, room, KnownMembership.Join);
             expect(call.connectionState).toBe(ConnectionState.Connected);
         });
 
         it("disconnects if the widget dies", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
             WidgetMessagingStore.instance.stopMessaging(widget, room.roomId);
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
         });
 
         it("acknowledges mute_device widget action", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             const preventDefault = jest.fn();
             const mockEv = {
                 preventDefault,
@@ -980,8 +916,8 @@ describe("ElementCall", () => {
             const onConnectionState = jest.fn();
             call.on(CallEvent.ConnectionState, onConnectionState);
 
-            await callConnectProcedure(call);
-            await callDisconnectionProcedure(call);
+            await connect(call, messaging);
+            await disconnect(call, messaging);
             expect(onConnectionState.mock.calls).toEqual([
                 [ConnectionState.Connected, ConnectionState.Disconnected],
                 [ConnectionState.Disconnecting, ConnectionState.Connected],
@@ -1003,10 +939,10 @@ describe("ElementCall", () => {
         });
 
         it("ends the call immediately if the session ended", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             const onDestroy = jest.fn();
             call.on(CallEvent.Destroy, onDestroy);
-            await callDisconnectionProcedure(call);
+            await disconnect(call, messaging);
             // this will be called automatically
             // disconnect -> widget sends state event -> session manager notices no-one left
             client.matrixRTC.emit(
@@ -1048,8 +984,6 @@ describe("ElementCall", () => {
         let call: ElementCall;
         let widget: Widget;
         let messaging: Mocked<ClientWidgetApi>;
-        let audioMutedSpy: jest.SpyInstance<boolean, []>;
-        let videoMutedSpy: jest.SpyInstance<boolean, []>;
 
         beforeEach(async () => {
             jest.useFakeTimers();
@@ -1062,64 +996,29 @@ describe("ElementCall", () => {
             if (maybeCall === null) throw new Error("Failed to create call");
             call = maybeCall;
 
-            ({ widget, messaging, audioMutedSpy, videoMutedSpy } = setUpWidget(call));
+            ({ widget, messaging } = setUpWidget(call));
         });
 
-        afterEach(() => cleanUpCallAndWidget(call, widget, audioMutedSpy, videoMutedSpy));
+        afterEach(() => cleanUpCallAndWidget(call, widget));
 
         it("doesn't end the call when the last participant leaves", async () => {
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             const onDestroy = jest.fn();
             call.on(CallEvent.Destroy, onDestroy);
-            await callDisconnectionProcedure(call);
+            await disconnect(call, messaging);
             expect(onDestroy).not.toHaveBeenCalled();
             call.off(CallEvent.Destroy, onDestroy);
         });
 
-        it("connect to call with ongoing session", async () => {
-            // Mock membership getter used by `roomSessionForRoom`.
-            // This makes sure the roomSession will not be empty.
-            jest.spyOn(MatrixRTCSession, "callMembershipsForRoom").mockImplementation(() => [
-                { fakeVal: "fake membership", getMsUntilExpiry: () => 1000 } as unknown as CallMembership,
-            ]);
-            // Create ongoing session
-            const roomSession = MatrixRTCSession.roomSessionForRoom(client, room);
-            const roomSessionEmitSpy = jest.spyOn(roomSession, "emit");
-
-            // Make sure the created session ends up in the call.
-            // `getActiveRoomSession` will be used during `call.connect`
-            // `getRoomSession` will be used during `Call.get`
-            client.matrixRTC.getActiveRoomSession.mockImplementation(() => {
-                return roomSession;
-            });
-            client.matrixRTC.getRoomSession.mockImplementation(() => {
-                return roomSession;
-            });
-
-            ElementCall.create(room);
-            const call = Call.get(room);
-            if (!(call instanceof ElementCall)) throw new Error("Failed to create call");
-            expect(call.session).toBe(roomSession);
-            await callConnectProcedure(call);
-            expect(roomSessionEmitSpy).toHaveBeenCalledWith(
-                "memberships_changed",
-                [],
-                [{ sender: "@alice:example.org" }],
-            );
-            expect(call.connectionState).toBe(ConnectionState.Connected);
-            call.destroy();
-        });
-
         it("handles remote disconnection and reconnect right after", async () => {
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            await callConnectProcedure(call);
+            await connect(call, messaging);
             expect(call.connectionState).toBe(ConnectionState.Connected);
 
             messaging.emit(`action:${ElementWidgetActions.HangupCall}`, new CustomEvent("widgetapirequest", {}));
-            messaging.emit(`action:${ElementWidgetActions.Close}`, new CustomEvent("widgetapirequest", {}));
             // We should now be able to reconnect without manually starting the widget
             expect(call.connectionState).toBe(ConnectionState.Disconnected);
-            await callConnectProcedure(call, false);
+            await connect(call, messaging, false);
             await waitFor(() => expect(call.connectionState).toBe(ConnectionState.Connected), { interval: 5 });
         });
     });

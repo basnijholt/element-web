@@ -53,6 +53,10 @@ import { type ShowThreadPayload } from "../../../dispatcher/payloads/ShowThreadP
 import { CardContext } from "../right_panel/context";
 import PinningUtils from "../../../utils/PinningUtils";
 import PosthogTrackers from "../../../PosthogTrackers.ts";
+import { MediaEventHelper } from "../../../utils/MediaEventHelper";
+import { FileDownloader } from "../../../utils/FileDownloader";
+import ErrorDialog from "../dialogs/ErrorDialog";
+import { getMindroomLongTextDescriptor } from "../../../utils/mindroomLongText";
 
 interface IReplyInThreadButton {
     mxEvent: MatrixEvent;
@@ -129,6 +133,7 @@ export default class MessageContextMenu extends React.Component<IProps, IState> 
     declare public context: React.ContextType<typeof RoomContext>;
 
     private reactButtonRef = createRef<any>(); // XXX Ref to a functional component
+    private readonly mindroomFileDownloader = new FileDownloader();
 
     public constructor(props: IProps) {
         super(props);
@@ -349,6 +354,25 @@ export default class MessageContextMenu extends React.Component<IProps, IState> 
         this.closeMenu();
     };
 
+    private onDownloadMindroomOriginal = async (): Promise<void> => {
+        const helper = new MediaEventHelper(this.props.mxEvent);
+        try {
+            const blob = await helper.sourceBlob.value;
+            await this.mindroomFileDownloader.download({
+                blob,
+                name: helper.fileName,
+            });
+        } catch (error) {
+            Modal.createDialog(ErrorDialog, {
+                title: _t("timeline|download_failed"),
+                description: `${_t("timeline|download_failed_description")}\n\n${String(error)}`,
+            });
+        } finally {
+            helper.destroy();
+            this.closeMenu();
+        }
+    };
+
     private onEndPollClick = (): void => {
         const matrixClient = MatrixClientPeg.safeGet();
         Modal.createDialog(
@@ -408,6 +432,7 @@ export default class MessageContextMenu extends React.Component<IProps, IState> 
             timelineRenderingType === TimelineRenderingType.Thread ||
             timelineRenderingType === TimelineRenderingType.ThreadsList;
         const isThreadRootEvent = isThread && mxEvent?.getThread()?.rootEvent === mxEvent;
+        const mindroomDescriptor = getMindroomLongTextDescriptor(mxEvent);
 
         let resendReactionsButton: JSX.Element | undefined;
         if (!mxEvent.isRedacted() && unsentReactionsCount !== 0) {
@@ -458,6 +483,17 @@ export default class MessageContextMenu extends React.Component<IProps, IState> 
                     iconClassName="mx_MessageContextMenu_iconForward"
                     label={_t("action|forward")}
                     onClick={this.onForwardClick(forwardableEvent)}
+                />
+            );
+        }
+
+        let mindroomDownloadButton: JSX.Element | undefined;
+        if (mindroomDescriptor) {
+            mindroomDownloadButton = (
+                <IconizedContextMenuOption
+                    iconClassName="mx_MessageContextMenu_iconDownload"
+                    label={_t("timeline|mindroom_long_text|download_original")}
+                    onClick={this.onDownloadMindroomOriginal}
                 />
             );
         }
@@ -714,6 +750,7 @@ export default class MessageContextMenu extends React.Component<IProps, IState> 
                 {viewInRoomButton}
                 {openInMapSiteButton}
                 {endPollButton}
+                {mindroomDownloadButton}
                 {forwardButton}
                 {permalinkButton}
                 {reportEventButton}

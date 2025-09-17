@@ -23,6 +23,7 @@ import {
     ambiguousLinkTooltipRenderer,
     codeBlockRenderer,
     spoilerRenderer,
+    collapsibleRenderer,
     replacerToRenderFunction,
 } from "../../../renderer";
 import MatrixClientContext from "../../../contexts/MatrixClientContext.tsx";
@@ -67,6 +68,10 @@ interface ReplacerOptions {
      * Whether to render tooltips for ambiguous links, only effective on platforms which specify `needsUrlTooltips` true
      */
     renderTooltipsForAmbiguousLinks?: boolean;
+    /**
+     * Whether to render collapsible blocks (thinking, tool calls, etc.)
+     */
+    renderCollapsibleBlocks?: boolean;
 }
 
 // Returns a memoized Replacer based on the input parameters
@@ -80,6 +85,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
     const replacer = useMemo(() => {
         const keywordRegexpPattern = mxEvent ? getPushDetailsKeywordPatternRegexp(mxEvent) : undefined;
         const replacers = filterBoolean<RendererMap>([
+            options.renderCollapsibleBlocks ? collapsibleRenderer : undefined,
             options.renderMentionPills ? mentionPillRenderer : undefined,
             options.renderKeywordPills && keywordRegexpPattern ? keywordPillRenderer : undefined,
             options.renderTooltipsForAmbiguousLinks && PlatformPeg.get()?.needsUrlTooltips()
@@ -97,6 +103,7 @@ const useReplacer = (content: IContent, mxEvent: MatrixEvent | undefined, option
         });
     }, [
         mxEvent,
+        options.renderCollapsibleBlocks,
         options.renderMentionPills,
         options.renderKeywordPills,
         options.renderTooltipsForAmbiguousLinks,
@@ -151,7 +158,7 @@ interface Props extends ReplacerOptions {
 const EventContentBody = memo(
     ({ as, mxEvent, stripReply, content, linkify, highlights, includeDir = true, ref, ...options }: Props) => {
         const enableBigEmoji = useSettingValue("TextualBody.enableBigEmoji");
-        const [mediaIsVisible] = useMediaVisible(mxEvent?.getId(), mxEvent?.getRoomId());
+        const [mediaIsVisible] = useMediaVisible(mxEvent);
 
         const replacer = useReplacer(content, mxEvent, options);
         const linkifyOptions = useMemo(

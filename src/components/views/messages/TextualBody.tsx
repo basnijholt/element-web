@@ -29,6 +29,7 @@ import { options as linkifyOpts } from "../../../linkify-matrix";
 import { getParentEventId } from "../../../utils/Reply";
 import { EditWysiwygComposer } from "../rooms/wysiwyg_composer";
 import { type IEventTileOps } from "../rooms/EventTile";
+import InlineSpinner from "../elements/InlineSpinner";
 
 interface IState {
     // the URLs (if any) to be previewed with a LinkPreviewWidget inside this TextualBody.
@@ -64,7 +65,8 @@ export default class TextualBody extends React.Component<IBodyProps, IState> {
             const stoppedEditing = prevProps.editState && !this.props.editState;
             const messageWasEdited = prevProps.replacingEventId !== this.props.replacingEventId;
             const urlPreviewChanged = prevProps.showUrlPreview !== this.props.showUrlPreview;
-            if (messageWasEdited || stoppedEditing || urlPreviewChanged) {
+            const renderedContentChanged = prevProps.renderedContent !== this.props.renderedContent;
+            if (messageWasEdited || stoppedEditing || urlPreviewChanged || renderedContentChanged) {
                 this.applyFormatting();
             }
         }
@@ -81,6 +83,9 @@ export default class TextualBody extends React.Component<IBodyProps, IState> {
             nextProps.highlightLink !== this.props.highlightLink ||
             nextProps.showUrlPreview !== this.props.showUrlPreview ||
             nextProps.editState !== this.props.editState ||
+            nextProps.renderedContent !== this.props.renderedContent ||
+            nextProps.mindroomStatus !== this.props.mindroomStatus ||
+            nextProps.mindroomError !== this.props.mindroomError ||
             nextState.links !== this.state.links ||
             nextState.widgetHidden !== this.state.widgetHidden ||
             nextProps.isSeeingThroughMessageHiddenForModeration !== this.props.isSeeingThroughMessageHiddenForModeration
@@ -312,7 +317,7 @@ export default class TextualBody extends React.Component<IBodyProps, IState> {
             );
         }
         const mxEvent = this.props.mxEvent;
-        const content = mxEvent.getContent();
+        const content = this.props.renderedContent ?? mxEvent.getContent();
         const isNotice = content.msgtype === MsgType.Notice;
         const isEmote = content.msgtype === MsgType.Emote;
         const isCaption = [MsgType.Image, MsgType.File, MsgType.Audio, MsgType.Video].includes(
@@ -338,6 +343,7 @@ export default class TextualBody extends React.Component<IBodyProps, IState> {
                 renderMentionPills
                 renderCodeBlocks
                 renderSpoilers
+                renderCollapsibleBlocks
             />
         );
 
@@ -382,39 +388,86 @@ export default class TextualBody extends React.Component<IBodyProps, IState> {
             );
         }
 
+        const inlineSpinner =
+            this.props.mindroomStatus === "loading" ? (
+                <span
+                    className="mx_MindroomLongTextBody_spinner"
+                    aria-live="polite"
+                    aria-label={_t("timeline|mindroom_long_text|loading_label")}
+                >
+                    <InlineSpinner w={14} h={14} />
+                </span>
+            ) : null;
+
+        let bodyWithSpinner = body;
+        if (inlineSpinner) {
+            if (React.isValidElement(body)) {
+                const existingChildren = React.Children.toArray(body.props.children);
+                bodyWithSpinner = React.cloneElement(body, body.props, [...existingChildren, inlineSpinner]);
+            } else {
+                bodyWithSpinner = (
+                    <>
+                        {body}
+                        {inlineSpinner}
+                    </>
+                );
+            }
+        }
+
+        const errorCallout =
+            this.props.mindroomStatus === "error" ? (
+                <div className="mx_MindroomLongTextBody_error" role="alert">
+                    {_t("timeline|mindroom_long_text|load_failed")}
+                    {this.props.onMindroomRetry && (
+                        <AccessibleButton kind="link_inline" onClick={this.props.onMindroomRetry}>
+                            {_t("common|try_again")}
+                        </AccessibleButton>
+                    )}
+                </div>
+            ) : null;
+
         if (isEmote) {
             return (
-                <div className="mx_MEmoteBody mx_EventTile_content" onClick={this.onBodyLinkClick} dir="auto">
+                <div
+                    id={this.props.id}
+                    className="mx_MEmoteBody mx_EventTile_content"
+                    onClick={this.onBodyLinkClick}
+                    dir="auto"
+                >
                     *&nbsp;
                     <span className="mx_MEmoteBody_sender" onClick={this.onEmoteSenderClick}>
                         {mxEvent.sender ? mxEvent.sender.name : mxEvent.getSender()}
                     </span>
                     &nbsp;
-                    {body}
+                    {bodyWithSpinner}
                     {widgets}
+                    {errorCallout}
                 </div>
             );
         }
         if (isNotice) {
             return (
-                <div className="mx_MNoticeBody mx_EventTile_content" onClick={this.onBodyLinkClick}>
-                    {body}
+                <div id={this.props.id} className="mx_MNoticeBody mx_EventTile_content" onClick={this.onBodyLinkClick}>
+                    {bodyWithSpinner}
                     {widgets}
+                    {errorCallout}
                 </div>
             );
         }
         if (isCaption) {
             return (
-                <div className="mx_MTextBody mx_EventTile_caption" onClick={this.onBodyLinkClick}>
-                    {body}
+                <div id={this.props.id} className="mx_MTextBody mx_EventTile_caption" onClick={this.onBodyLinkClick}>
+                    {bodyWithSpinner}
                     {widgets}
+                    {errorCallout}
                 </div>
             );
         }
         return (
-            <div className="mx_MTextBody mx_EventTile_content" onClick={this.onBodyLinkClick}>
-                {body}
+            <div id={this.props.id} className="mx_MTextBody mx_EventTile_content" onClick={this.onBodyLinkClick}>
+                {bodyWithSpinner}
                 {widgets}
+                {errorCallout}
             </div>
         );
     }

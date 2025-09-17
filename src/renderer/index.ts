@@ -9,6 +9,8 @@ export { ambiguousLinkTooltipRenderer } from "./link-tooltip";
 export { keywordPillRenderer, mentionPillRenderer } from "./pill";
 export { spoilerRenderer } from "./spoiler";
 export { codeBlockRenderer } from "./code-block";
+export { thinkingRenderer } from "./thinking"; // Deprecated - use collapsibleRenderer
+export { collapsibleRenderer, createCollapsibleRenderer } from "./collapsible";
 export {
     applyReplacerOnString,
     replacerToRenderFunction,
